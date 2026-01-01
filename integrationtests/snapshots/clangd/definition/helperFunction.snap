@@ -1,8 +1,8 @@
 ---
 
 Symbol: helperFunction
-/TEST_OUTPUT/workspace/clangd/src/helper.cpp
-Range: L7:C1 - L7:C71
+File: /TEST_OUTPUT/workspace/include/helper.hpp
+Range: L1:C1 - L1:C22
 
-7|void helperFunction() { std::cout << "Helper function" << std::endl; }
+1|void helperFunction();
 

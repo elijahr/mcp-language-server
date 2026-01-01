@@ -44,6 +44,10 @@ type Client struct {
 	// Files are currently opened by the LSP
 	openFiles   map[string]*OpenFileInfo
 	openFilesMu sync.RWMutex
+
+	// Close synchronization
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func NewClient(command string, args ...string) (*Client, error) {
@@ -228,43 +232,47 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 }
 
 func (c *Client) Close() error {
-	// Try to close all open files first
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	c.closeOnce.Do(func() {
+		// Try to close all open files first
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	// Attempt to close files but continue shutdown regardless
-	c.CloseAllFiles(ctx)
+		// Attempt to close files but continue shutdown regardless
+		c.CloseAllFiles(ctx)
 
-	// Force kill the LSP process if it doesn't exit within timeout
-	forcedKill := make(chan struct{})
-	go func() {
-		select {
-		case <-time.After(2 * time.Second):
-			lspLogger.Warn("LSP process did not exit within timeout, forcing kill")
-			if c.Cmd.Process != nil {
-				if err := c.Cmd.Process.Kill(); err != nil {
-					lspLogger.Error("Failed to kill process: %v", err)
-				} else {
-					lspLogger.Info("Process killed successfully")
+		// Force kill the LSP process if it doesn't exit within timeout
+		forcedKill := make(chan struct{})
+		var killOnce sync.Once
+
+		go func() {
+			select {
+			case <-time.After(2 * time.Second):
+				lspLogger.Warn("LSP process did not exit within timeout, forcing kill")
+				if c.Cmd.Process != nil {
+					if err := c.Cmd.Process.Kill(); err != nil {
+						lspLogger.Error("Failed to kill process: %v", err)
+					} else {
+						lspLogger.Info("Process killed successfully")
+					}
 				}
+				killOnce.Do(func() { close(forcedKill) })
+			case <-forcedKill:
+				// Channel closed from completion path
+				return
 			}
-			close(forcedKill)
-		case <-forcedKill:
-			// Channel closed from completion path
-			return
+		}()
+
+		// Close stdin to signal the server
+		if err := c.stdin.Close(); err != nil {
+			lspLogger.Error("Failed to close stdin: %v", err)
 		}
-	}()
 
-	// Close stdin to signal the server
-	if err := c.stdin.Close(); err != nil {
-		lspLogger.Error("Failed to close stdin: %v", err)
-	}
+		// Wait for process to exit
+		c.closeErr = c.Cmd.Wait()
+		killOnce.Do(func() { close(forcedKill) }) // Stop the force kill goroutine
+	})
 
-	// Wait for process to exit
-	err := c.Cmd.Wait()
-	close(forcedKill) // Stop the force kill goroutine
-
-	return err
+	return c.closeErr
 }
 
 type ServerState int

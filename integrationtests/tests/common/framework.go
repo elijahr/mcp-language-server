@@ -189,6 +189,38 @@ func (ts *TestSuite) Setup() error {
 	return nil
 }
 
+// RestartLSP stops the current LSP client and starts a new one with updated config
+func (ts *TestSuite) RestartLSP() (*lsp.Client, error) {
+	// Create new LSP client with updated args
+	client, err := lsp.NewClient(ts.Config.Command, ts.Config.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LSP client: %w", err)
+	}
+
+	// Initialize LSP
+	_, err = client.InitializeLSPClient(ts.Context, ts.WorkspaceDir)
+	if err != nil {
+		return nil, fmt.Errorf("initialize failed: %w", err)
+	}
+
+	// Recreate watcher with new client
+	ts.Watcher = watcher.NewWorkspaceWatcher(client)
+	go ts.Watcher.WatchWorkspace(ts.Context, ts.WorkspaceDir)
+
+	if err := client.WaitForServerReady(ts.Context); err != nil {
+		return nil, fmt.Errorf("server failed to become ready: %w", err)
+	}
+
+	// Give watcher time to set up and scan workspace
+	initializeTime := 1000 // Default 1 second
+	if ts.Config.InitializeTimeMs > 0 {
+		initializeTime = ts.Config.InitializeTimeMs
+	}
+	time.Sleep(time.Duration(initializeTime) * time.Millisecond)
+
+	return client, nil
+}
+
 // Cleanup stops the LSP and cleans up resources
 func (ts *TestSuite) Cleanup() {
 	ts.cleanupOnce.Do(func() {

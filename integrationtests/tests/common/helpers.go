@@ -92,8 +92,9 @@ func CleanupTestSuites(suites ...*TestSuite) {
 }
 
 // normalizePaths replaces absolute paths in the result with placeholder paths for consistent snapshots
-func normalizePaths(_ *testing.T, input string) string {
-	// No need to get the repo root - we're just looking for patterns
+func normalizePaths(_ *testing.T, input, languageName string) string {
+	// List of known language subdirectories to strip
+	languageSubdirs := []string{"clangd", "go", "typescript", "python", "rust"}
 
 	// Simple approach: just replace any path segments that contain workspace/
 	lines := strings.Split(input, "\n")
@@ -103,17 +104,68 @@ func normalizePaths(_ *testing.T, input string) string {
 			// Extract everything after /workspace/
 			parts := strings.Split(line, "/workspace/")
 			if len(parts) > 1 {
-				// Replace with a simple placeholder path
-				lines[i] = "/TEST_OUTPUT/workspace/" + parts[1]
+				// Find the start of the path (look for common prefixes like "File: ")
+				// We want to preserve any text before the path starts (e.g., "Symbol: foo\nFile: ")
+				prefix := parts[0]
+
+				// Check if the prefix ends with a path component (contains /)
+				// If it does, we need to extract just the non-path prefix
+				if strings.LastIndex(prefix, "/") >= 0 {
+					// Find the last occurrence of a slash that's not part of a label
+					// Look backwards for text that doesn't look like a path
+					nonPathPrefix := ""
+
+					// Common patterns: "File: ", "Symbol: ", etc.
+					for _, label := range []string{"File: ", "Symbol: ", "Container: "} {
+						if idx := strings.LastIndex(prefix, label); idx >= 0 {
+							nonPathPrefix = prefix[:idx+len(label)]
+							break
+						}
+					}
+
+					// If we didn't find a label, check if the entire prefix is a path
+					if nonPathPrefix == "" {
+						// The entire prefix is likely part of a path, so don't keep it
+						prefix = ""
+					} else {
+						prefix = nonPathPrefix
+					}
+				}
+
+				// Get the path after /workspace/
+				pathAfterWorkspace := parts[1]
+
+				// Strip language subdirectory if present at the start
+				for _, lang := range languageSubdirs {
+					langPrefix := lang + "/"
+					if strings.HasPrefix(pathAfterWorkspace, langPrefix) {
+						pathAfterWorkspace = strings.TrimPrefix(pathAfterWorkspace, langPrefix)
+						break
+					}
+				}
+
+				// Replace with a simple placeholder path without language subdirectory
+				lines[i] = prefix + "/TEST_OUTPUT/workspace/" + pathAfterWorkspace
 			}
 		}
 		// Some tests, e.g. clangd, may include fully qualified paths to the base /workspaces/ directory
 		if strings.Contains(line, "/workspaces/") {
-			// Extract everything after /workspace/
+			// Extract everything after /workspaces/
 			parts := strings.Split(line, "/workspaces/")
 			if len(parts) > 1 {
+				pathAfterWorkspaces := parts[1]
+
+				// Strip language subdirectory if present
+				for _, lang := range languageSubdirs {
+					langPrefix := lang + "/"
+					if strings.HasPrefix(pathAfterWorkspaces, langPrefix) {
+						pathAfterWorkspaces = strings.TrimPrefix(pathAfterWorkspaces, langPrefix)
+						break
+					}
+				}
+
 				// Replace with a simple placeholder path
-				lines[i] = "/TEST_OUTPUT/workspace/" + parts[1]
+				lines[i] = "/TEST_OUTPUT/workspace/" + pathAfterWorkspaces
 			}
 		}
 	}
@@ -152,7 +204,7 @@ func FindRepoRoot() (string, error) {
 // If the file doesn't exist or UPDATE_SNAPSHOTS=true env var is set, it will update the snapshot
 func SnapshotTest(t *testing.T, languageName, toolName, testName, actualResult string) {
 	// Normalize paths in the result to avoid system-specific paths in snapshots
-	actualResult = normalizePaths(t, actualResult)
+	actualResult = normalizePaths(t, actualResult, languageName)
 
 	// Get the absolute path to the snapshots directory
 	repoRoot, err := FindRepoRoot()
